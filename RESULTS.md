@@ -67,15 +67,39 @@ matters for the write-up.
 
 ## §2 All three decks
 
+All three verified against real, live-fetched Gmail attachment content (not
+local test files) - `quantumleap` and `fieldnote` via full `npm run triage`
+runs, `brightforge` via direct `fetch-attachment` + the same extract/assess
+code, after a Gmail search-ordering quirk (§ note below) meant the graph's
+"take candidates[0]" picked `fieldnote` twice before `brightforge` ever
+became reachable that way.
+
 | Deck | Expected | `fit` | `reasoning` | `evidenceQuote` |
 |---|---|---|---|---|
-| `quantumleap-fit.pdf` | fit | | | |
-| `fieldnote-no-fit-consumer.pdf` | no fit (consumer) | | | |
-| `brightforge-no-fit-hardware.pdf` | no fit (hardware) | | | |
+| `quantumleap-fit.pdf` | fit | `true` | "The deck matches all thesis criteria: U.S. incorporation, developer-focused B2B software, current ARR in range, technical co-founders coding, and a clear path to $1M+ ARR in 12 months." | (4-sentence contiguous span, see §1) |
+| `fieldnote-no-fit-consumer.pdf` | no fit (consumer) | `false` | "The product is a consumer app for journaling, not B2B software aimed at technical buyers." | "Fieldnote  A daily journaling app that turns your mood into a photo memory." |
+| `brightforge-no-fit-hardware.pdf` | no fit (hardware) | `false` | "The company is hardware-focused and not building B2B software for technical buyers such as developers or IT teams." | "a retrofit kit that turns an existing forklift into an autonomous unit in under a day." |
+
+**Real finding**: Gmail's `messages.list` search order is not reliably
+newest-first. After sending `fieldnote` then `brightforge`, a fresh search
+still ranked `fieldnote` ahead of `brightforge` - so the graph's "handle
+`candidates[0]`" reprocessed `fieldnote` a second time (a no-op here since
+it's a no-fit, but the same mechanism would silently skip a genuinely new
+fit deck if an older matching email happens to rank first). Worth a real
+fix (sort/filter on internal date, or process every candidate) before this
+goes anywhere near production - noted, not built, same spirit as the
+Reprocessing Gap.
 
 ## §3 Reprocessing Gap
 
-`{{PLACEHOLDER: what happened on the second `npm run triage` against the same email - duplicate Slack post, or no candidates found}}`
+Confirmed live: re-ran `npm run triage` immediately after §1's successful run,
+with no new email sent. `list-pitch-emails`' search has no read/seen state
+and no memory of prior runs, so it found the exact same message
+(`1a06ec586e214db6`) again, re-extracted, re-assessed (`fit: true` again,
+this time with a short one-sentence `evidenceQuote` - see the note in §1
+about quote-length variance), and posted a **second, duplicate** Slack
+notification (`notified: true`). Exactly the gap named and deliberately not
+built in `CONTEXT.md` - confirmed rather than assumed.
 
 ## §4 Verdict
 

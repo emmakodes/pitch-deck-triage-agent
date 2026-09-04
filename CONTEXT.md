@@ -32,3 +32,7 @@ _Avoid_: Agent — this system has no tool-picking agent, unlike the Linear samp
 The known, unsolved limitation that running a second Triage Run against the same email produces a second Slack notification for it. Explicitly out of scope for this build, not silently ignored.
 _Avoid_: Idempotency, Dedupe — naming the mechanism that would fix it implies it's fixed; it isn't.
 
+**Candidate Ordering Gap**:
+The known, unsolved limitation that a Triage Run always acts on the first result Gmail's search returns, and that order is not reliably newest-first — confirmed live (§2, RESULTS.md): an older matching email outranked one sent after it. A genuinely new fit deck can sit unprocessed behind an older, already-handled one. Distinct from the Reprocessing Gap: that one is about running the same email twice; this one is about never reaching the right email at all.
+_Avoid_: conflating with the Reprocessing Gap — they're two separate unsolved gaps, not one.
+
