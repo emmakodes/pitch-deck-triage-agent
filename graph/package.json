@@ -1,0 +1,26 @@
+{
+    "name": "pitch-deck-triage-graph",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "engines": {
+        "node": ">=22"
+    },
+    "scripts": {
+        "triage": "tsx src/run.ts",
+        "generate-decks": "tsx src/generate-decks.ts"
+    },
+    "dependencies": {
+        "@langchain/langgraph": "^0.2.57",
+        "dotenv": "^16.4.5",
+        "openai": "^4.104.0",
+        "pdfjs-dist": "^6.3.289"
+    },
+    "devDependencies": {
+        "@types/node": "^22.9.0",
+        "@types/pdfkit": "^0.13.4",
+        "pdfkit": "^0.15.1",
+        "tsx": "^4.19.2",
+        "typescript": "^5.6.3"
+    }
+}
