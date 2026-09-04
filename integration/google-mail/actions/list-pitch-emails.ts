@@ -15,6 +15,12 @@ import * as z from 'zod';
  * Only returns metadata + an attachmentId - Gmail's API does not return
  * attachment content in the same call. Fetching the bytes is a second action:
  * fetch-attachment.
+ *
+ * Input is `z.object({}).strict()`, not `z.void()`: Nango compiles `void` to
+ * a `{"type":"null"}` JSON schema, but an MCP `tools/call` sends `arguments`
+ * as an object - `{}` for a tool with nothing to pass - which fails that
+ * schema (`must be null`) under strict validation. Verified live via
+ * `nango dryrun --input '{}' --validation`.
  */
 
 const QUERY = 'has:attachment filename:pdf newer_than:30d';
@@ -79,7 +85,7 @@ const action = createAction({
     description: 'List recent Gmail messages that have a PDF attachment, one candidate Pitch Deck per message.',
     version: '1.0.0',
     endpoint: { method: 'GET', path: '/gmail/pitch-emails', group: 'Triage' },
-    input: z.void(),
+    input: z.object({}).strict(),
     output: outputSchema,
 
     exec: async (nango): Promise<z.infer<typeof outputSchema>> => {
