@@ -63,7 +63,12 @@ one-liner an earlier local smoke test produced for the same deck/schema.
 Model variance run to run, not a bug; worth a length cap if a punchier quote
 matters for the write-up.
 
-`{{PLACEHOLDER: confirm the Slack message actually landed in #project - paste a screenshot or the message text}}`
+Confirmed: the message landed in `#project`, posted by the Nango-provided dev Slack app (`NangoDevelopersOnlyNotForProduction`):
+
+> **Pitch deck fit** — pitch deck (from Michael Michael <finemichaellz@gmail.com>)
+> Fit: ✅ yes
+> Reasoning: The deck matches all thesis criteria: U.S. incorporation, developer-focused B2B software, current ARR in range, technical co-founders coding, and a clear path to $1M+ ARR in 12 months.
+> Team: two co-founders, both ex-Datadog engineers, both still write the core query engine. Traction: $380K ARR across 14 mid-market engineering teams, up from $90K six months ago. Ask: raising a $2.5M seed to hire 2 engineers and close a pipeline of 6 enterprise pilots we believe gets us to $1.1M ARR within 12 months. Incorporated: Delaware C-corp, HQ in Austin, TX.
 
 ## §2 All three decks
 
@@ -103,4 +108,4 @@ built in `CONTEXT.md` - confirmed rather than assumed.
 
 ## §4 Verdict
 
-`{{PLACEHOLDER: one-paragraph honest summary once the above is filled in}}`
+Every piece worked once the real, live bugs above were fixed - and none of those bugs were in the LLM or in the LangGraph graph logic itself, which ran correctly on every attempt once its inputs were valid. They were all in the gap between what a schema, an env file, or a deploy command was assumed to do and what it actually does under strict validation, a shared environment, and a real inbox holding more than one match. The MCP client, the one part of this build with no prior art to copy, worked against Nango's live server on the first real call. The two gaps left deliberately unbuilt - Reprocessing and Candidate Ordering - are both real and both confirmed live, not hypothetical; a production version of this needs an idempotency key and an explicit sort on `internalDate`, neither of which this build attempts.
