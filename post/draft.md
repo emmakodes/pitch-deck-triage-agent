@@ -45,6 +45,25 @@ That last part matters for this build specifically: the plan here is for our own
 - A free [Nango](https://nango.dev) account
 - An OpenAI API key with Structured Outputs access
 
+## Installation
+
+The repo has two independent projects: `integration` (the three Nango actions) and `graph` (the LangGraph pipeline that calls them). Clone it and install both:
+
+```bash
+git clone https://github.com/emmakodes/pitch-deck-triage-agent.git
+cd pitch-deck-triage-agent
+
+cd integration
+npm install
+cp .env.example .env
+
+cd ../graph
+npm install
+cp .env.example .env
+```
+
+Both `.env` files stay empty for now - `integration/.env` needs your Nango secret key, `graph/.env` needs that same key plus the connection IDs and Slack channel you get from the next two sections.
+
 ## Connect your Gmail and Slack accounts
 
 In the Nango dashboard, add both integrations first: **Integrations → Add Integration**, search for Gmail, and use the pre-filled "Nango developer app" tab shown above instead of registering your own OAuth app - the same screen, minus the icon, appears for Slack.
@@ -192,72 +211,245 @@ That `Actions +3 -2` line above is not a typo in this write-up - it is a screens
 
 ## Build the LangGraph pipeline
 
-With all three actions deployed, the graph itself is short. Each node calls exactly one named Nango tool - nothing here hands a model the tool list and asks it to choose:
+With all three actions deployed, the graph itself is short - this is the complete file (source comments trimmed for length, logic untouched). Each node calls exactly one named Nango tool - nothing here hands a model the tool list and asks it to choose:
 
 ```typescript
-// graph/src/pipeline.ts (trimmed - connection/secret wiring left out, see the repo)
+// graph/src/pipeline.ts
 import { StateGraph, Annotation, START, END } from '@langchain/langgraph';
+import type OpenAI from 'openai';
 import { callNangoTool } from './mcp-client.ts';
 import { extractPdfText } from './pdf.ts';
-import { assessFit } from './assess.ts';
+import { assessFit, type FitAssessment } from './assess.ts';
 import { THESIS } from './thesis.ts';
 
+interface EmailCandidate {
+    messageId: string;
+    threadId: string;
+    from: string;
+    subject: string;
+    attachmentId: string;
+    filename: string;
+}
+
 const TriageState = Annotation.Root({
-    email: Annotation<EmailCandidate | null>({ reducer: (_p, n) => n, default: () => null }),
-    deckText: Annotation<string | null>({ reducer: (_p, n) => n, default: () => null }),
-    assessment: Annotation<FitAssessment | null>({ reducer: (_p, n) => n, default: () => null })
+    email: Annotation<EmailCandidate | null>({ reducer: (_prev, next) => next, default: () => null }),
+    deckText: Annotation<string | null>({ reducer: (_prev, next) => next, default: () => null }),
+    assessment: Annotation<FitAssessment | null>({ reducer: (_prev, next) => next, default: () => null }),
+    notified: Annotation<boolean>({ reducer: (_prev, next) => next, default: () => false })
 });
 
-const graph = new StateGraph(TriageState)
-    .addNode('fetchEmail', async () => {
-        const { candidates } = await callNangoTool(secretKey, gmailScope, 'list-pitch-emails', {});
-        return { email: candidates[0] ?? null };
-    })
-    .addNode('fetchDeck', async (state) => {
-        const { data } = await callNangoTool(secretKey, gmailScope, 'fetch-attachment', {
-            messageId: state.email.messageId,
-            attachmentId: state.email.attachmentId
-        });
-        return { deckText: await extractPdfText(data) };
-    })
-    .addNode('assess', async (state) => {
-        return { assessment: await assessFit(openai, THESIS, state.deckText) };
-    })
-    .addNode('notify', async (state) => {
-        const text = `*Pitch deck fit* - ${state.email.subject}\nReasoning: ${state.assessment.reasoning}\n> ${state.assessment.evidenceQuote}`;
-        await callNangoTool(secretKey, slackScope, 'send-slack-message', { channel: SLACK_CHANNEL, text });
-    })
-    .addEdge(START, 'fetchEmail')
-    .addConditionalEdges('fetchEmail', (s) => (s.email ? 'fetchDeck' : END))
-    .addEdge('fetchDeck', 'assess')
-    .addConditionalEdges('assess', (s) => (s.assessment?.fit ? 'notify' : END))
-    .addEdge('notify', END);
+export interface GraphConfig {
+    nangoSecretKey: string;
+    gmailConnectionId: string;
+    slackConnectionId: string;
+    slackChannel: string;
+    openai: OpenAI;
+}
+
+export function buildTriageGraph(config: GraphConfig) {
+    const gmailScope = { connectionId: config.gmailConnectionId, providerConfigKey: 'google-mail' };
+    const slackScope = { connectionId: config.slackConnectionId, providerConfigKey: 'slack' };
+
+    const graph = new StateGraph(TriageState)
+        .addNode('fetchEmail', async () => {
+            const { candidates } = await callNangoTool<{ candidates: EmailCandidate[] }>(config.nangoSecretKey, gmailScope, 'list-pitch-emails', {});
+            const email = candidates[0] ?? null;
+            if (!email) {
+                console.log('No candidate Pitch Deck email found - nothing to triage this run.');
+            }
+            return { email };
+        })
+        .addNode('fetchDeck', async (state) => {
+            if (!state.email) {
+                return {};
+            }
+            const { data } = await callNangoTool<{ data: string; size: number }>(config.nangoSecretKey, gmailScope, 'fetch-attachment', {
+                messageId: state.email.messageId,
+                attachmentId: state.email.attachmentId
+            });
+            const deckText = await extractPdfText(data);
+            return { deckText };
+        })
+        .addNode('assess', async (state) => {
+            if (!state.deckText) {
+                return {};
+            }
+            const assessment = await assessFit(config.openai, THESIS, state.deckText);
+            return { assessment };
+        })
+        .addNode('notify', async (state) => {
+            if (!state.email || !state.assessment) {
+                return {};
+            }
+            const text =
+                `*Pitch deck fit* — ${state.email.subject} (from ${state.email.from})\n` +
+                `Fit: ${state.assessment.fit ? '✅ yes' : '❌ no'}\n` +
+                `Reasoning: ${state.assessment.reasoning}\n` +
+                `> ${state.assessment.evidenceQuote}`;
+            await callNangoTool(config.nangoSecretKey, slackScope, 'send-slack-message', { channel: config.slackChannel, text });
+            return { notified: true };
+        })
+        .addEdge(START, 'fetchEmail')
+        .addConditionalEdges('fetchEmail', (state) => (state.email ? 'fetchDeck' : END), { fetchDeck: 'fetchDeck', [END]: END })
+        .addEdge('fetchDeck', 'assess')
+        .addConditionalEdges('assess', (state) => (state.assessment?.fit ? 'notify' : END), { notify: 'notify', [END]: END })
+        .addEdge('notify', END);
+
+    return graph.compile();
+}
 ```
 
-`callNangoTool` is a small, hand-rolled MCP client - about 60 lines, no SDK. It opens a session against Nango's hosted MCP server (`https://api.nango.dev/mcp`), scoped to one connection via the `connection-id` and `provider-config-key` headers, and calls one tool by name:
+Four nodes, two conditional edges: skip straight to `END` if there's no candidate email, and skip `notify` if the deck doesn't fit. `assessFit` is the only LLM call in the whole graph - a single OpenAI Structured Outputs call that returns `{ fit, reasoning, evidenceQuote }`, with the schema explicit that `evidenceQuote` has to be one contiguous span copied from the deck, not several sentences stitched together. Worth being that explicit: the first version of this schema, without that constraint, returned a quote that spliced two non-adjacent sentences together with "...". Technically an answer, not actually a quote.
+
+`callNangoTool` is the small, hand-rolled MCP client that makes the `list-pitch-emails`, `fetch-attachment`, and `send-slack-message` calls above work - no SDK, under 100 lines. It opens a session against Nango's hosted MCP server (`https://api.nango.dev/mcp`), scoped to one connection via the `connection-id` and `provider-config-key` headers, and calls one tool by name. Complete file below, source comments trimmed for length:
 
 ```typescript
-// graph/src/mcp-client.ts (trimmed)
-export async function callNangoTool(secretKey, scope, toolName, args) {
-    const headers = {
+// graph/src/mcp-client.ts
+const NANGO_MCP_URL = 'https://api.nango.dev/mcp';
+
+export interface McpScope {
+    connectionId: string;
+    providerConfigKey: string;
+}
+
+interface JsonRpcResponse {
+    jsonrpc: '2.0';
+    id?: number;
+    result?: unknown;
+    error?: { code: number; message: string; data?: unknown };
+}
+
+interface McpToolResult {
+    isError?: boolean;
+    content?: { type: string; text?: string }[];
+}
+
+function headersFor(secretKey: string, scope: McpScope): Record<string, string> {
+    return {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
         Authorization: `Bearer ${secretKey}`,
         'connection-id': scope.connectionId,
-        'provider-config-key': scope.providerConfigKey,
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream'
+        'provider-config-key': scope.providerConfigKey
     };
+}
 
-    await rpc(headers, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'pitch-deck-triage-graph', version: '1.0.0' } });
-    const result = await rpc(headers, 'tools/call', { name: toolName, arguments: args });
+async function parseBody(res: Response): Promise<JsonRpcResponse | undefined> {
+    const contentType = res.headers.get('content-type') ?? '';
+    const body = await res.text();
+    if (!body) {
+        return undefined;
+    }
 
-    const textBlock = result.content.find((c) => c.type === 'text');
-    return JSON.parse(textBlock.text);
+    if (contentType.includes('text/event-stream')) {
+        // SSE framing: one or more "data: <json>" lines - the response we
+        // want is the last one.
+        const dataLines = body
+            .split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice('data:'.length).trim());
+        const last = dataLines.at(-1);
+        return last ? (JSON.parse(last) as JsonRpcResponse) : undefined;
+    }
+
+    return JSON.parse(body) as JsonRpcResponse;
+}
+
+let nextId = 1;
+
+async function rpc(headers: Record<string, string>, method: string, params?: unknown): Promise<unknown> {
+    const res = await fetch(NANGO_MCP_URL, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: nextId++, method, params })
+    });
+    if (!res.ok) {
+        throw new Error(`MCP ${method} failed: HTTP ${res.status} ${await res.text()}`);
+    }
+    const parsed = await parseBody(res);
+    if (parsed?.error) {
+        throw new Error(`MCP ${method} error: ${JSON.stringify(parsed.error)}`);
+    }
+    return parsed?.result;
+}
+
+export async function callNangoTool<T = unknown>(secretKey: string, scope: McpScope, toolName: string, args: Record<string, unknown>): Promise<T> {
+    const headers = headersFor(secretKey, scope);
+
+    await rpc(headers, 'initialize', {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: { name: 'pitch-deck-triage-graph', version: '1.0.0' }
+    });
+
+    // Required notification - no response expected, fire and ignore.
+    await fetch(NANGO_MCP_URL, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    }).catch(() => undefined);
+
+    const result = (await rpc(headers, 'tools/call', { name: toolName, arguments: args })) as McpToolResult | undefined;
+
+    // MCP tool failures surface via `isError` on the result, not the
+    // JSON-RPC error field checked in rpc() above - check both.
+    if (result?.isError) {
+        throw new Error(`Nango tool "${toolName}" failed: ${JSON.stringify(result.content)}`);
+    }
+
+    const textBlock = result?.content?.find((c) => c.type === 'text' && typeof c.text === 'string');
+    if (!textBlock?.text) {
+        throw new Error(`Nango tool "${toolName}" returned no text content: ${JSON.stringify(result)}`);
+    }
+    return JSON.parse(textBlock.text) as T;
 }
 ```
 
 This is the one part of the build with no worked example to copy from: most MCP write-ups either use a hosted agent runtime's built-in MCP client (letting OpenAI or Claude's platform own the wire protocol) or a full MCP SDK. Calling `tools/call` directly, from inside a LangGraph node, with a different `connection-id`/`provider-config-key` pair per provider, is a thinner path than either - and it worked against Nango's live server on the first real run, once the issues below were out of the way.
 
-The last piece, `assessFit`, is the only LLM call in the whole graph - a single OpenAI Structured Outputs call that returns `{ fit, reasoning, evidenceQuote }`, with the schema explicit that `evidenceQuote` has to be one contiguous span copied from the deck, not several sentences stitched together. Worth being that explicit: the first version of this schema, without that constraint, returned a quote that spliced two non-adjacent sentences together with "...". Technically an answer, not actually a quote.
+## Run a Triage Run
+
+Fill in `graph/.env` with the connection IDs from the earlier step, your Nango secret key, your OpenAI key, and the Slack channel to notify - then wire it all up in the entry point:
+
+```typescript
+// graph/src/run.ts
+import 'dotenv/config';
+import OpenAI from 'openai';
+import { buildTriageGraph } from './pipeline.ts';
+
+function requireEnv(name: string): string {
+    const v = process.env[name];
+    if (!v) {
+        throw new Error(`Missing env var ${name} - see .env.example`);
+    }
+    return v;
+}
+
+const openai = new OpenAI({ apiKey: requireEnv('OPENAI_API_KEY') });
+
+const graph = buildTriageGraph({
+    nangoSecretKey: requireEnv('NANGO_SECRET_KEY'),
+    gmailConnectionId: requireEnv('NANGO_GMAIL_CONNECTION_ID'),
+    slackConnectionId: requireEnv('NANGO_SLACK_CONNECTION_ID'),
+    slackChannel: requireEnv('SLACK_CHANNEL'),
+    openai
+});
+
+const started = Date.now();
+const result = await graph.invoke({});
+const elapsed = Date.now() - started;
+
+console.log(`\n--- Triage Run (${elapsed} ms) ---`);
+console.log(JSON.stringify(result, null, 2));
+```
+
+Email yourself a PDF pitch deck, then run it:
+
+```bash
+npm run triage
+```
+
+On a matching deck, this fetches the email, extracts the text, gets a Fit Assessment from OpenAI, and posts to Slack. Here's the real message from the first live run against `quantumleap-fit.pdf`:
 
 ![The real Slack message this pipeline posted for a fitting deck, reasoning and quoted evidence included](images/slack-pitch-deck-fit-message.png)
 
